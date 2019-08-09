@@ -1,0 +1,79 @@
+---
+title: "Find E.coli stations"
+author: "Tao Huang"
+date: "August 7, 2019"
+output: html_document
+---
+
+```{r}
+#water quality portal
+library(dataRetrieval)
+```
+
+#read Giardia and Crypto data
+```{r}
+gi<-read.csv("C:/Users/huangt/Downloads/Giardia_station.csv")
+cry<-read.csv("C:/Users/huangt/Downloads/Cryptosporidium_station.csv")
+head(gi)
+head(cry)
+
+```
+
+#I just need USGS Q station data?
+```{r}
+
+```
+
+
+#construct URLs
+```{r}
+
+```
+
+
+#Construct NWIS url for data retrieval
+```{r}
+site_id <- '01372043'
+startDate <- '1973-01-01'
+endDate <- ''
+pCode <- c("00060","00010")
+url_daily <- constructNWISURL(site_id,pCode,
+startDate,endDate,'dv',statCd=c("00003","00001"))
+url_unit <- constructNWISURL(site_id,pCode,"2012-06-28","2012-06-30",'iv')
+url_qw_single <- constructNWISURL(site_id,"01075",startDate,endDate,'qw')
+url_qw <- constructNWISURL(site_id,c('01075','00029','00453'),
+startDate,endDate,'qw')
+url_daily_tsv <- constructNWISURL(site_id,pCode,startDate,endDate,'dv',
+statCd=c("00003","00001"),format="tsv")
+url_rating <- constructNWISURL(site_id,service="rating",ratingType="base")
+url_peak <- constructNWISURL(site_id, service="peak")
+url_meas <- constructNWISURL(site_id, service="meas")
+urlQW <- constructNWISURL("450456092225801","70300",startDate="",endDate="","qw",expanded=TRUE)
+
+
+
+```
+
+```{r}
+startDate <- '1973-01-01'
+
+charNames <- c("Temperature",
+               "Temperature, sample",
+               "Temperature, water",
+               "Temperature, water, deg F",
+               "Fecal Coliform")
+
+obs_url_orig <- constructWQPURL(siteNumbers = c("USGS-01372043",
+                                                "USGS-01372058"), 
+                                parameterCd = charNames,
+                                startDate,"")
+
+obs_url_orig
+
+```
+
+```{r}
+FSites <- whatWQPsites(siteid="USGS-01372043",characteristicName="Fecal Coliform")
+FData<-readWQPdata(siteid="USGS-01372043",characteristicName="Fecal Coliform")
+```
+
