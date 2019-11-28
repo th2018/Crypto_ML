@@ -1,0 +1,27 @@
+---
+title: "CRYPTO_CASE"
+purpose: "Working with dates and time in R"
+output: html_document
+---
+#read data
+```{r}
+case_us<-read.csv("/Users/owner/Downloads/US/US.240370009.csv")
+head(case_us)
+```
+#covert from factor to date
+```{r}
+for (c in c("PeriodStartDate","PeriodEndDate"            ))
+{
+  case_us[,c]<-as.Date(  case_us[,c],format="%Y-%m-%d")
+}
+head(case_us)
+```
+#extract month
+```{r}
+case_us$PeriodEndDate_mo<-months(case_us$PeriodEndDate)
+```
+#count case by month
+```{r}
+case_us_by_month<-aggregate(case_us$CountValue,by=list(c(case_us$PeriodEndDate_mo)),FUN="sum")
+```
+
