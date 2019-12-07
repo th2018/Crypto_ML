@@ -1,0 +1,1818 @@
+#Load packages
+```{r}
+#install.packages("gbm")
+library('gbm') #generalized boosted models
+library('caTools') #calculates AUC
+#install.packages("ROCR")
+library('ROCR') #makes ROC curves
+#install.packages("dismo")
+library('dismo')
+library('caret')
+library("dataRetrieval")
+library("pdp")          # model visualization
+library("ggplot2")      # model visualization
+library("lime")         # model visualization
+#install.packages("pROC")
+library("pROC")
+#install.packages("e1071", repos="http://R-Forge.R-project.org")
+library("e1071")
+library( "MASS" )    #    used to generate correlated variables
+library("sp")
+library("dplyr")
+library("Hmisc")    #   used for graphing se bars
+#install.packages("rnoaa")
+library("rnoaa")
+```
+
+#Read water quality data, remove -9999 and NA
+```{r}
+c<-"/Users/owner/Desktop/crypto/ec"
+setwd(c)
+cc<-read.csv("narrowresult-EC_PA_WI_OH.tsv",header=T,sep="\t")
+dim(cc)
+cc<-cc[,c("ActivityStartDate","MonitoringLocationIdentifier"
+          #,"ResultDetectionConditionText"
+          ,"CharacteristicName"
+          #,"ResultSampleFractionText"
+          , "ResultMeasureValue", "ResultMeasure.MeasureUnitCode"
+          #,"ResultCommentText","ResultLaboratoryCommentText"
+          )]
+cc$ResultMeasureValue<-as.numeric(as.character(cc$ResultMeasureValue))
+head(cc)
+summary(cc$ResultMeasureValue)
+cc<-cc[!(cc$ResultMeasureValue==-9999.0| is.na(cc$ResultMeasureValue)),]
+summary(cc$ResultMeasureValue)
+save(cc,file="/Users/owner/Desktop/crypto/ec/cc.Rdata")
+```
+
+#read stations
+```{r}
+c_s<-"/Users/owner/Desktop/crypto/ec"
+setwd(c_s)
+cc_s<-read.csv("station-EC_WI_PA_OH.csv",header=T,sep=',')
+#cc_s2<-read.csv("station201909.csv",header=T,sep=',')
+head(cc_s)
+dim(cc_s)
+cc_s<-cc_s[,c("MonitoringLocationIdentifier","DrainageAreaMeasure.MeasureValue","DrainageAreaMeasure.MeasureUnitCode", "ContributingDrainageAreaMeasure.MeasureValue","ContributingDrainageAreaMeasure.MeasureUnitCode", "LatitudeMeasure", "LongitudeMeasure")]
+head(cc_s)
+#cc_s2<-cc_s2[,c("MonitoringLocationIdentifier","DrainageAreaMeasure.MeasureValue","DrainageAreaMeasure.MeasureUnitCode", "ContributingDrainageAreaMeasure.MeasureValue","ContributingDrainageAreaMeasure.MeasureUnitCode", "LatitudeMeasure", "LongitudeMeasure")]
+save(cc_s,file="/Users/owner/Desktop/crypto/ec/cc_s.Rdata")
+```
+
+#find USGS "river" stations
+```{r}
+USGS_cc<-cc[grepl("USGS", cc$MonitoringLocationIdentifier)==T,]   
+dim(USGS_cc)
+USGS_cc$USGS<-USGS_cc$MonitoringLocationIdentifier
+
+USGS_cc$USGS<-gsub('USGS-','',as.character(USGS_cc$USGS))
+USGS_cc3<-USGS_cc[nchar(USGS_cc$USGS)==8,]
+
+USGS_cc2<-merge(USGS_cc3,cc_s,by.x="MonitoringLocationIdentifier",by.y="MonitoringLocationIdentifier")
+
+dim(USGS_cc)
+dim(USGS_cc2)
+dim(USGS_cc3)
+head(USGS_cc2)
+save(USGS_cc2,file="/Users/owner/Desktop/crypto/ec/USGS_cc2.Rdata")
+```
+
+#get Q (LULC first? Q takes too long)
+```{r}
+
+USGS_cc2$Q<-" "
+for (i in c(1:length(USGS_cc2$USGS)))
+
+{
+  
+siteNo <- as.character(USGS_cc2[i,]$USGS)
+pCode <- "00060" #discharge
+#pCode shortName
+#00060 Discharge [ft3/s]
+#00065 Gage height [ft]
+#00010 Temperature [C]
+#00045 Precipitation [in]
+#00400 pH
+start.date <- as.character(USGS_cc2[i,]$ActivityStartDate)
+end.date <- as.character(USGS_cc2[i,]$ActivityStartDate)
+if (nrow(readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = start.date,
+                     endDate = end.date))>0)
+{
+  USGS_cc2[i,]$Q<- readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = start.date,
+                     endDate = end.date)$X_00060_00003
+}
+else
+{
+ USGS_cc2[i,]$Q<-NA 
+}
+  }
+head(USGS_cc2)
+
+```
+
+#get runoff (negative Q aND RUNOFF!) (USGS-04194085)
+```{r}
+USGS_cc4<-USGS_cc2[is.na(USGS_cc2$Q)==F,]
+USGS_cc4$runoff<-""
+#ft s/sq mi
+#1 mi = 5280 ft.
+USGS_cc4$runoff<-(as.numeric(USGS_cc4$Q)*86400)/((USGS_cc4$DrainageAreaMeasure.MeasureValue)*5280*5280)*(0.3048*1000) #mm/d
+summary(USGS_cc4$runoff)
+
+USGS_cc4<-USGS_cc4[!USGS_cc4$MonitoringLocationIdentifier=="USGS-04194085",]
+
+ missQ<-as.data.frame(table(USGS_cc2[!(USGS_cc2$MonitoringLocationIdentifier %in% USGS_cc4$MonitoringLocationIdentifier),]$MonitoringLocationIdentifier))
+
+save(USGS_cc4,file="/Users/owner/Desktop/crypto/ec/USGS_cc4_20190507.Rdata")
+```
+
+#load the data
+```{r}
+USGS_cc4_20190507<-load("/Users/owner/Desktop/crypto/ec/USGS_cc4_20190507.Rdata")
+head(USGS_cc4_20190507)
+head(USGS_cc4)
+
+```
+
+#remove USGS-04194085
+```{r}
+dim(USGS_cc4)
+
+USGS_cc4<-USGS_cc4[!USGS_cc4$MonitoringLocationIdentifier=="USGS-04194085",]
+
+dim(USGS_cc4)
+
+summary(USGS_cc4$runoff)
+
+```
+
+#load LULC data
+```{r}
+CntlPlains_cry_ws<-load("/Users/owner/Desktop/crypto/bas_ws/bas_nonref_CntlPlains_cry_ws/bas_nonref_CntlPlains_cry_ws.Rdata")
+head(CntlPlains_cry_ws)
+EastHghlnds_cry_ws<-load("/Users/owner/Desktop/crypto/bas_ws/bas_nonref_EastHghlnds_cry_ws/bas_nonref_EastHghlnds_cry_ws.Rdata")
+head(EastHghlnds_cry_ws)
+NorthEast_cry_ws<-load("/Users/owner/Desktop/crypto/bas_ws/bas_nonref_NorthEast_cry_ws/bas_nonref_NorthEast_cry_ws.Rdata")
+head(NorthEast_cry_ws)
+head(bas_nonref_NorthEast_cry_ws)
+```
+
+#merge the lulc
+```{r}
+USGS_cc4_lulc_CntlPlains<-merge(bas_nonref_CntlPlains_cry_ws,USGS_cc4,by.x="GAGE_ID", by.y="MonitoringLocationIdentifier")
+USGS_cc4_lulc_EastHghlnds<-merge(bas_nonref_EastHghlnds_cry_ws,USGS_cc4,by.x="GAGE_ID", by.y="MonitoringLocationIdentifier" )
+USGS_cc4_lulc_NorthEast<-merge(bas_nonref_NorthEast_cry_ws,USGS_cc4,by.x="GAGE_ID", by.y="MonitoringLocationIdentifier" )
+
+USGS_cc4_lulc_CntlPlains_EastHghlnds_cry_ws<-rbind(USGS_cc4_lulc_CntlPlains,USGS_cc4_lulc_EastHghlnds)
+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws<-rbind(USGS_cc4_lulc_NorthEast,USGS_cc4_lulc_CntlPlains_EastHghlnds_cry_ws)
+
+dim(USGS_cc4_lulc_CntlPlains)
+dim(USGS_cc4_lulc_CntlPlains_EastHghlnds_cry_ws)
+dim(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws)
+
+save(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws,file="/Users/owner/Desktop/crypto/ec/USGS_cc4_lulc_all_ws.Rdata")
+
+```
+
+```{r}
+USGS_cc4_lulc_all_ws<-load("/Users/owner/Desktop/crypto/ec/USGS_cc4_lulc_all_ws.Rdata")
+#USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws
+```
+
+#find the nearest climate station for each USGS station
+```{r}
+USGS_cc4_lulc<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws
+m<-matrix(c(USGS_cc4_lulc$LongitudeMeasure,USGS_cc4_lulc$LatitudeMeasure),ncol=2)
+mu<-unique(m)
+
+#To get a full and current list of stations
+stations <- ghcnd_stations()
+save(stations,file="/Users/owner/Desktop/crypto/ec/stations.Rdata")
+
+stations<-stations[!(stations$id %in% c("USC00103760","USC00331905","USC00361920","USC00365902","USC00366233","USC00368668","USC00475474","USC00476764","USC00476922","USC00479046","USW00014813","USC00336949","USC00360861","USC00361726")),]
+#the last year later than 2009
+station_last<-stations[stations$last_year>2009 & stations$first_year<1989 ,]
+#temperature
+station_last_TMAX_TMIN<-station_last[station_last$element %in% c("TMAX"),]
+sm<-matrix(c(station_last_TMAX_TMIN$longitude,station_last_TMAX_TMIN$latitude ),ncol=2)
+smu<-unique(sm)
+#USGS_cc4_lulc_all_ws
+#sta<-c("")
+lon<-as.numeric("")
+lat<-as.numeric("")
+USGS_lon<-as.numeric("")
+df<-data.frame(
+  lon,lat,USGS_lon)
+
+station_last_TMAX_TMIN_nearest[station_last_TMAX_TMIN_nearest$USGS_lon==-88.0436111,]
+
+for (i in c(1:dim(mu)[1]))
+{
+ # print(mu[i,])
+  km <- spDistsN1(smu, #climate station
+                  mu[i,], longlat=TRUE)
+  i2<-which(km==min(km))
+  sdf<-data.frame(smu[i2,1],smu[i2,2],mu[i,][1])
+  colnames(sdf)<-c("lon", "lat","USGS_lon")
+  df<-rbind(df,sdf)
+}
+summary(df) #list of weather stations (can be repeated)
+```
+
+#the table of NOAA & USGS
+```{r}
+dim(station_last_TMAX_TMIN)
+station_last_TMAX_TMIN_nearest<-merge(station_last_TMAX_TMIN, #NOAA stations
+                                      df[-1,], #USGS lon  and the nearest NOAA stations
+                                      by.x="latitude",by.y="lat")
+station_last_TMAX_TMIN_nearest<-station_last_TMAX_TMIN_nearest[!station_last_TMAX_TMIN_nearest$state=="OR",]
+# df2<-df
+# colnames(df2)<-c("latitude","longitude","USGS_lon")
+# df2<-df2[-1,]
+# station_last_TMAX_TMIN_nearest<- full_join(station_last_TMAX_TMIN, #NOAA stations
+#                                             df2, #USGS lon  and the nearest NOAA stations
+#                                            by = c("latitude","longitude"))
+
+#station_last_TMAX_TMIN_nearest <- station_last_TMAX_TMIN_nearest[!is.na(station_last_TMAX_TMIN_nearest$USGS_lon),]
+
+dim(station_last_TMAX_TMIN_nearest)
+table(station_last_TMAX_TMIN_nearest$element)
+
+tmax_sta<-station_last_TMAX_TMIN_nearest[station_last_TMAX_TMIN_nearest$element=="TMAX",]
+tmin_sta<-station_last_TMAX_TMIN_nearest[station_last_TMAX_TMIN_nearest$element=="TMIN",]
+tmax_sta[!(tmax_sta$id %in% tmin_sta$id),]
+
+#station_last_TMAX_TMIN_nearest<-station_last_TMAX_TMIN_nearest[station_last_TMAX_TMIN_nearest$element=="TMIN",]
+save(station_last_TMAX_TMIN_nearest,file="/Users/owner/Desktop/crypto/ec/station_last_TMAX_TMIN_nearest.Rdata")
+```
+
+#1. (USGS_cc4_lulc) LULC-date-ResultMeasureValue-drainage area-"LatitudeMeasure"- "LongitudeMeasure"-"Q"-"runoff"
+#2. (station_last_TMAX_TMIN_nearest) "latitude"-"id"-"longitude"-"elevation"-"state"-"name"-"gsn_flag"-"wmo_id"-"element"- "first_year" "last_year"-"lon"-"USGS_lon"
+#3. merge by "USGS_lon"
+```{r}
+dim(USGS_cc4_lulc)
+USGS_cc4_lulc_nearest<-merge(USGS_cc4_lulc,station_last_TMAX_TMIN_nearest,by.x= "LongitudeMeasure" ,by.y=  "USGS_lon")
+dim(USGS_cc4_lulc[!(USGS_cc4_lulc$LongitudeMeasure %in% station_last_TMAX_TMIN_nearest$USGS_lon ),])
+table(USGS_cc4_lulc[!(USGS_cc4_lulc$LongitudeMeasure %in% station_last_TMAX_TMIN_nearest$USGS_lon ),]$USGS)
+dim(USGS_cc4_lulc_nearest)
+save(USGS_cc4_lulc_nearest,file="/Users/owner/Desktop/crypto/ec/USGS_cc4_lulc_nearest.Rdata")
+# id - ResultMeasureValue - RUNOFF- DATE - DrainageAreaMeasure.MeasureValu- LULC
+```
+
+#get tmin 
+```{r}
+u_sta<-unique( USGS_cc4_lulc_nearest$id)
+
+# u_sta_d<-as.data.frame(u_sta)
+# # 
+# u_sta_d<-u_sta_d[!(u_sta_d$u_sta%in%c("USC00103760","USC00331905","USC00361920","USC00365902","USC00366233","USC00368668","USC00475474","USC00476764","USC00476922","USC00479046","USW00014813")),]
+# # 
+# u_sta<-as.character(u_sta_d)
+
+id<-c("")
+ tmin<-as.numeric("")
+ date<-as.Date("1234-12-21")     
+ mflag<-c("") 
+ qflag<-c("") 
+ sflag<-c("")
+ sta_df<-data.frame(id,tmin,date,mflag,qflag,sflag)
+ sta_df$id<-as.character(sta_df$id)
+ 
+ for (s in c(1:length(u_sta)))
+{
+  u_sta[s]
+  g<-ghcnd_search(u_sta[s], var = "TMIN")
+  sta_tmin<-g$tmin
+   sta_df<-rbind( sta_df,  sta_tmin)
+ }
+
+# length(sta_df$ActivityStartDate)
+# sta_df<-sta_df[   sta_df$ActivityStartDate>as.Date("1989-01-01") & sta_df$ActivityStartDate<as.Date("2009-12-31"),]
+# length(sta_df$ActivityStartDate)
+#  
+# table(sta_df[is.na(sta_df$tmin),]$id)
+
+#USC00103760 USC00331905 USC00361920 USC00365902 USC00366233 USC00368668 
+#        333           5           1          10          41           3 
+#USC00475474 USC00476764 USC00476922 USC00479046 USW00014813 
+#         21          53          81           3          93 
+
+colnames(sta_df)<-c("id","tmin" ,"ActivityStartDate","mflag","qflag","sflag")    
+USGS_cc4_lulc_nearest$ActivityStartDate<-as.Date(USGS_cc4_lulc_nearest$ActivityStartDate) 
+sta_df$id<-as.character(sta_df$id)
+USGS_cc4_lulc_nearest_tmin<- full_join(USGS_cc4_lulc_nearest, sta_df,by = c("id", "ActivityStartDate"))
+USGS_cc4_lulc_nearest_tmin_rmna<-USGS_cc4_lulc_nearest_tmin[!is.na(USGS_cc4_lulc_nearest_tmin$ResultMeasureValue),]
+dim(USGS_cc4_lulc_nearest_tmin_rmna)
+USGS_cc4_lulc_nearest_tmin_rmna<-USGS_cc4_lulc_nearest_tmin_rmna[USGS_cc4_lulc_nearest_tmin_rmna$element=="TMAX",]
+dim(USGS_cc4_lulc_nearest_tmin_rmna)
+save(USGS_cc4_lulc_nearest_tmin_rmna,file="/Users/owner/Desktop/crypto/ec/USGS_cc4_lulc_nearest_tmin.Rdata")
+
+```
+
+#get tmax 
+```{r}
+id<-c("")
+ tmax<-as.numeric("")
+ date<-as.Date("1234-12-21")     
+ mflag<-c("") 
+ qflag<-c("") 
+ sflag<-c("")
+ sta_df_max<-data.frame(id,tmax,date,mflag,qflag,sflag)
+ 
+ for (s in c(1:length(u_sta)))
+{
+  u_sta[s]
+  g<-ghcnd_search(u_sta[s], var = "TMAX")
+  sta_tmax<-g$tmax
+   sta_df_max<-rbind( sta_df_max,  sta_tmax)
+ }
+
+colnames(sta_df_max)<-c("id","tmax" ,"ActivityStartDate","mflag","qflag","sflag")    
+sta_df_max$id<-as.character(sta_df_max$id)
+
+
+USGS_cc4_lulc_nearest_tmin_rmna_tmax<- full_join(USGS_cc4_lulc_nearest_tmin_rmna, sta_df_max,by = c("id", "ActivityStartDate"))
+summary(USGS_cc4_lulc_nearest_tmin_rmna_tmax)
+
+USGS_cc4_lulc_nearest_tmin_rmna_tmax<-USGS_cc4_lulc_nearest_tmin_rmna_tmax[!is.na(USGS_cc4_lulc_nearest_tmin_rmna_tmax$ResultMeasureValue),]
+
+save(USGS_cc4_lulc_nearest_tmin_rmna_tmax,file="/Users/owner/Desktop/crypto/ec/USGS_cc4_lulc_nearest_tmin_rmna_tmax.Rdata")
+
+```
+
+#hysep function
+```{r}
+
+hysep <- function(Flow, Dates, Start=NULL, End=NULL, da,
+                 select="sliding", STAID="Unknown") {
+  ## Start of code: initial processing
+  STAID <- as.character(STAID[1L])
+  if(is.null(Start))
+    Start <- Dates[1L]
+  else if(is.character(Start))
+    Start <- as.Date(Start)
+  if(is.null(End))
+    End <- Dates[length(Dates)]
+  else if(is.character(End))
+    End <- as.Date(End)
+  sel <- (Dates >= Start) & (Dates <= End)
+  Dates <- Dates[sel]
+  Flow <- pmax(Flow[sel], 1e-99) # Convert 0 to a small number
+  if(any(is.na(Flow)))
+    stop("Missing values between ", Start, " and ", End)
+  if(any(diff(as.double(Dates)) != 1))
+    stop("Date data are not continuous between Start and End")
+  select <- match.arg(select, c("sliding", "local minimum", "fixed"))
+  Nact <- max(da^0.2, 1)
+  N2star <- max((((2*Nact) ) %/% 2)*2 + 1, 3)
+  ## Set up for fixed--construct intervals of length N2star
+  Nobs <- length(Flow)
+  Ngrp <- ceiling(Nobs / N2star)
+  Grps <- inverse.rle(list(lengths=rep(N2star, Ngrp), values=seq(Ngrp)))
+  length(Grps) <- Nobs # Truncate if necessary
+  ## Compute the fixed method
+  Mins <- tapply(Flow, Grps, min)
+  Fixed <- Mins[as.character(Grps)]
+  ## Now the sliding method
+  Slide <- sapply(seq(N2star, Nobs), function(i)
+    min(Flow[seq(i - N2star + 1L, i)])
+  )
+  SlB <- Slide[1L]
+  SlE <- Slide[length(Slide)]
+  Nfil <- (N2star - 1L) / 2L
+  Slide <- c(rep(SlB, Nfil), Slide, rep(SlE, Nfil))
+  ## And the local minimum
+  Mid <- as.integer((N2star) / 2)
+  LocMin <- sapply(seq(N2star, Nobs), function(i)
+    min(Flow[seq(i - N2star + 1L, i)]) == Flow[i - Mid]
+  )
+  LocMin <- c(rep(FALSE, Nfil), LocMin, rep(FALSE, Nfil))
+  ## Need to trap short periods where only 1 local minimum
+  if(sum(LocMin) == 1L) {
+    warning("Only one local minimum in calibration period")
+    LocMin <- pmax(Flow[LocMin], 0.01)
+  } else
+    LocMin <- exp(approx(which(LocMin), log(pmax(Flow[LocMin], 0.01)), xout=seq(Nobs), rule=2)$y)
+  LocMin <- pmin(Flow, LocMin) # recover 0s and tails
+  if(select == "fixed")
+    BaseQ <- Fixed
+  else if(select == "sliding")
+    BaseQ <- Slide
+  else 
+    BaseQ <- LocMin
+  retval <- data.frame(Dates=Dates, BaseQ=round(BaseQ, 3L), 
+                       Flow=Flow, Fixed=Fixed, Sliding=Slide, 
+                       LocalMin=LocMin)
+  if(!is.null(STAID))
+    attr(retval, "STAID") <- STAID
+  attr(retval, "type") <- "hysep"
+  class(retval) <- c("baseflow", "data.frame")
+  return(retval)
+}
+
+```
+
+#need to get Q in previous 44 days 
+```{r}
+USGS_cc4<-USGS_cc4_lulc_nearest_tmin_rmna_tmax
+USGS_cc4$storm<-" "
+for (i in c(1:length(USGS_cc4$USGS)))
+#for (i in c(41:59))
+{
+siteNo <- as.character(USGS_cc4[i,]$USGS)
+pCode <- "00060" #discharge
+start.date <- as.character(as.Date(USGS_cc4[i,]$ActivityStartDate,format=("%Y-%m-%d"))-44)
+end.date <- as.character(USGS_cc4[i,]$ActivityStartDate)
+
+if (nrow(readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = start.date,
+                     endDate = end.date))>0)
+{
+  print(nrow(readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = start.date,
+                     endDate = end.date)))
+  USGS_cc4[i,]$Q<- readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = end.date,
+                     endDate = end.date)$X_00060_00003
+  
+ st<- paste("Q_44days",i,sep='_')
+  st<- readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = start.date,
+                     endDate = end.date)
+  print (paste("Q_44days",i,sep='_'))
+  #hysep(s1372500$X105182_00060_00003,Dates=2/1/2019,da=1)
+  #head(s1372500)
+  #agency_cd site_no datetime X105182_00060_00003 X105182_00060_00003_cd
+#1      USGS 1372500 2/1/2019                 399                      P
+test<-hysep(as.integer(st$X_00060_00003),Dates=
+              #2008-09-27
+              #9/27/2008
+              st$Date
+            ,da=1)
+print(test)
+USGS_cc4[i,]$storm<-(1-test$BaseQ[45]/test$Flow[45])
+}
+else
+{
+ USGS_cc4[i,]$storm<-NA 
+ USGS_cc4[i,]$Q<-NA 
+}
+print(paste("day ",i," done",sep=','))
+  }
+head(USGS_cc4)
+plot(USGS_cc4$storm,as.numeric(USGS_cc4$runoff))
+                                
+save(USGS_cc4,file="/Users/owner/Desktop/crypto/ec/USGS_cc4_20190507_2.Rdata")
+```
+
+```{r}
+load("/Users/owner/Desktop/crypto/ec/USGS_cc4_20190507_2.Rdata")
+#usgs_cc4 (USGS_lon_date)
+USGS_cc4$storm<-as.numeric(USGS_cc4$storm)
+summary(USGS_cc4$storm)
+USGS_cc4<-USGS_cc4[!is.na(USGS_cc4$storm),]
+USGS_cc4<-USGS_cc4[!is.na(USGS_cc4$tmax),]
+USGS_cc4$Q<-as.numeric(USGS_cc4$Q)
+summary(USGS_cc4)
+#"storm", "tmax"
+```
+
+
+<!-- #get temperature from the nearest station -->
+<!-- #https://cran.r-project.org/web/packages/rnoaa/rnoaa.pdf -->
+<!-- ```{r} -->
+<!-- head(USGS_cc4) -->
+<!-- #TEST -->
+<!-- #coops_search(station_name = 8723970, begin_date = 20120301,end_date = 20141001, datum = "stnd", product = "monthly_mean") -->
+<!-- #GET THE LIST OF STATION -->
+<!-- #station_data <- ghcnd_stations()  -->
+<!-- lat_lon_df<-USGS_cc4[, c("MonitoringLocationIdentifier", "LatitudeMeasure",  "LongitudeMeasure")  ] -->
+<!-- colnames(lat_lon_df)<-c("id","latitude", "longitude") -->
+<!-- #save(station_data,file="/Users/owner/Desktop/CRYPTO_CODE/station_data.Rdata") -->
+<!-- load("/Users/owner/Desktop/CRYPTO_CODE/station_data.Rdata") -->
+<!-- nearby_stations <-  meteo_nearby_stations(lat_lon_df = lat_lon_df, -->
+<!--                     station_data = station_data, radius = 10, var = c("PRCP", "TMAX","TAVG","TMIN")) -->
+<!-- head(nearby_stations) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- temperature<-read.csv("/Users/owner/Desktop/crypto/cry_station/1725692.csv",header=T,sep=',') -->
+<!-- temperature -->
+<!-- temperature<-temperature[temperature$STATION=="USW00014895",] -->
+
+<!-- #TAVG<-temperature[,c("DATE","TAVG")] -->
+<!-- TAVG<-temperature[,c("DATE","TAVG","TMAX","TMIN")] -->
+<!-- w<-which(is.na(TAVG$TAVG)==T) -->
+<!-- TAVG[w,]$TAVG<-(TAVG[w,]$TMIN+TAVG[w,]$TMAX)/2 -->
+<!-- summary(TAVG$TAVG) -->
+<!-- #load("/Users/owner/Desktop/crypto/USGS_cc4.Rdata") -->
+
+<!-- USGS_cc4_temp<-merge(USGS_cc4,TAVG,by.x="ActivityStartDate", by.y="DATE" ) -->
+<!-- USGS_cc4<-USGS_cc4_temp -->
+<!-- save(USGS_cc4,file="/Users/owner/Desktop/crypto/USGS_cc4_20190507_2.Rdata") -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- USGS_cc4_20190507_2<-load("/Users/owner/Desktop/crypto/USGS_cc4_20190507_2.Rdata") -->
+<!-- head(USGS_cc4_20190507_2) -->
+<!-- colnames(USGS_cc4) -->
+<!-- ``` -->
+
+
+
+
+<!-- ```{r} -->
+<!-- no_LULC<-(USGS_cc4[!(USGS_cc4$MonitoringLocationIdentifier %in% bas_nonref_CntlPlains_cry_ws$GAGE_ID) & !(USGS_cc4$MonitoringLocationIdentifier %in% bas_nonref_EastHghlnds_cry_ws$GAGE_ID) & !(USGS_cc4$MonitoringLocationIdentifier %in% bas_nonref_NorthEast_cry_ws$GAGE_ID) ,]) -->
+
+<!-- no_LULC_t<-as.data.frame(table(no_LULC$MonitoringLocationIdentifier)) -->
+
+<!-- ``` -->
+
+<!-- #USGS-01562000 -->
+<!-- ```{r} -->
+<!-- #GAGE_ID_01562000.shp is in bas_nonref_EastHghlnds_cry_ws -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- load("/Users/owner/Desktop/crypto/bas_ws/USGS_cc4_lulc_all_ws.Rdata") -->
+<!-- ``` -->
+
+
+<!-- #lump lulc -->
+<!-- ```{r} -->
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Water<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc11 -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Developed<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc21+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc22+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc23+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc24 -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Barren<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc31 -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Forest<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc41+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc42+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc43 -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Shrubland<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc52 -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Herbaceous<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc71 -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Cultivated<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc81+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc82 -->
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Wetland<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc90+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc95 -->
+
+<!-- head(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws) -->
+
+<!-- save(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws,file="/Users/owner/Desktop/crypto/bas_ws/USGS_cc4_lulc_lumped_all_ws.Rdata") -->
+
+<!-- ``` -->
+
+
+<!-- #lump lulc (put lulc with mean<10% to "other") -->
+<!-- ```{r} -->
+<!-- #other -->
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Other<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc11+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc31+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc52+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc71+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc90+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc95 #water #Barren # Shrubland   #Herbaceous #wetland -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Developed<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc21+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc22+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc23+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc24 -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Forest<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc41+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc42+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc43 -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$Cultivated<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc81+USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$lulc82 -->
+
+<!-- head(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws) -->
+
+<!-- #make sure the sum is 100 -->
+<!-- sum(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws[1,c("Other","Developed" -->
+<!-- #,"Barren" -->
+<!-- ,"Forest", -->
+<!--          #                                                    "Shrubland", -->
+<!--                                                              #"Herbaceous", -->
+<!--                                                              "Cultivated" -->
+<!-- #                                                           ,  "Wetland" -->
+<!-- )]) -->
+
+<!-- save(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws,file="/Users/owner/Desktop/crypto/bas_ws/USGS_cc4_lulc_lumped_all_ws.Rdata") -->
+
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- load("/Users/owner/Desktop/crypto/bas_ws/USGS_cc4_lulc_lumped_all_ws.Rdata") -->
+<!-- head(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws) -->
+<!-- ``` -->
+
+<!-- #rename columns -->
+<!-- ```{r} -->
+<!-- USGS_cc4_lulc<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws -->
+
+<!-- colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="TAVG"] <- "Temperature" -->
+<!-- colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="storm"] <- "Surface_runoff" -->
+<!-- colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="detect"] <- "Detect" -->
+<!-- colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="DrainageAreaMeasure.MeasureValue"] <- "Watershed_Area" -->
+<!-- colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="runoff"] <- "Runoff" -->
+<!-- colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="Other"] <- "Other_LULC" -->
+<!-- ``` -->
+
+<!-- #add interactive terms -->
+<!-- ```{r} -->
+<!-- USGS_cc4_lulc_i<-USGS_cc4_lulc -->
+<!-- USGS_cc4_lulc_i$Developed_Surface_runoff<-USGS_cc4_lulc_i$Developed*USGS_cc4_lulc_i$Surface_runoff -->
+<!-- USGS_cc4_lulc_i$Developed_Runoff<-USGS_cc4_lulc_i$Developed*USGS_cc4_lulc_i$Runoff -->
+<!-- USGS_cc4_lulc_i$Forest_Surface_runoff<-USGS_cc4_lulc_i$Forest*USGS_cc4_lulc_i$Surface_runoff -->
+<!-- USGS_cc4_lulc_i$Forest_Runoff<-USGS_cc4_lulc_i$Forest*USGS_cc4_lulc_i$Runoff -->
+<!-- USGS_cc4_lulc_i$Runoff_Surface_runoff<-USGS_cc4_lulc_i$Runoff*USGS_cc4_lulc_i$Surface_runoff -->
+<!-- USGS_cc4_lulc_i$Temperature_Surface_runoff<-USGS_cc4_lulc_i$Temperature*USGS_cc4_lulc_i$Surface_runoff -->
+<!-- ``` -->
+
+#binary detect
+```{r}
+USGS_cc4_lulc<-USGS_cc4
+dim(USGS_cc4_lulc)
+
+USGS_cc4_lulc$Detect<-as.numeric(0)
+USGS_cc4_lulc[USGS_cc4$ResultMeasureValue>235,]$Detect<-as.numeric(1)
+dim(USGS_cc4_lulc)
+
+USGS_cc4_lulc$Developed<-USGS_cc4_lulc$lulc21    + USGS_cc4_lulc$lulc22+USGS_cc4_lulc$lulc23+USGS_cc4_lulc$lulc24
+
+USGS_cc4_lulc$Forest <-USGS_cc4_lulc$lulc41   + USGS_cc4_lulc$lulc42 +USGS_cc4_lulc$lulc43
+
+USGS_cc4_lulc<-USGS_cc4_lulc[!is.na(USGS_cc4_lulc$tmin),]
+USGS_cc4_lulc$tmin<-USGS_cc4_lulc$tmin/10
+USGS_cc4_lulc$tmax<-USGS_cc4_lulc$tmax/10
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="storm"] <- "Surface_runoff"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="tmin"] <- "Min_temperature"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="tmax"] <- "Max_temperature"
+```
+
+#split the data
+```{r}
+
+#Partitioning the data and running a GBM
+
+#Creating training and test sets
+set.seed(123) #uses a fixed seed so that every call will result in the same output.
+
+USGS_cc4_lulc<-USGS_cc4_lulc[,c(52:53,15:17,12,7:9,3   #LULC
+                                ,42,46 #TEMPERATURE
+                                ,50 #SURFACE Q
+                                ,29 #RUNOFF
+                                ,23 #WATERSHED AREA
+                                ,51 #DETECT
+                                )]
+
+intrain<-createDataPartition(y=USGS_cc4_lulc$Detect ,
+                             p=0.8,
+                             list=FALSE)
+#class(intrain) "matrix"
+
+test<-USGS_cc4_lulc[-intrain,]
+training<-USGS_cc4_lulc[intrain,]
+
+dim(test)
+dim(training)
+```
+
+
+<!-- #split the data (interactive) -->
+<!-- ```{r} -->
+
+<!-- set.seed(123) #uses a fixed seed so that every call will result in the same output. -->
+
+<!-- USGS_cc4_lulc_i<-USGS_cc4_lulc_i[,c(41:44 #LULC -->
+<!--                                 ,38 #TEMPERATURE -->
+<!--                                 ,37 #SURFACE Q -->
+<!--                                 ,36 #RUNOFF -->
+<!--                                 ,29 #WATERSHED AREA -->
+<!--                                 ,26 #DETECT -->
+<!--                                 ,45:50 #interactive -->
+<!--                                 )] -->
+
+<!-- intrain<-createDataPartition(y=USGS_cc4_lulc_i$Detect , -->
+<!--                              p=0.8, -->
+<!--                              list=FALSE) -->
+<!-- #class(intrain) "matrix" -->
+
+<!-- test<-USGS_cc4_lulc_i[-intrain,] -->
+<!-- training<-USGS_cc4_lulc_i[intrain,] -->
+
+<!-- dim(test) -->
+<!-- dim(training) -->
+<!-- ``` -->
+
+#the model
+```{r}
+model<-as.formula(paste(colnames(USGS_cc4_lulc)[16], "~",      paste(colnames(USGS_cc4_lulc)[c(1:15)], collapse="+"), #families
+                        sep = ""))
+#that error message typically means you don’t have values for a variable represented in the model building process. 
+water_gbm_lumped<- gbm(model,
+             data=training, 
+             distribution="bernoulli",
+             n.trees=400,
+             shrinkage=0.1,
+             interaction.depth=1,
+             bag.fraction=0.50,
+             #train.fraction=1,
+             n.minobsinnode=10,
+            cv.folds=10, # that error occurs when you have variable levels that exist in the test set which don't exist in the training set.
+             keep.data=TRUE,
+             class.stratify.cv=TRUE,
+             verbose="CV")
+#jpeg(paste("/Users/owner/Desktop/crypto/ec/","lumped_perf",'.jpg',sep=''))
+gbm.perf(water_gbm_lumped)
+
+```
+
+<!-- #the model (w interactive terms) -->
+<!-- ```{r} -->
+<!-- model<-as.formula(paste(colnames(USGS_cc4_lulc_i)[9], "~",      paste(colnames(USGS_cc4_lulc_i)[c(1:8,10:15)], collapse="+"), #families -->
+<!--                         sep = "")) -->
+<!-- #that error message typically means you don’t have values for a variable represented in the model building process.  -->
+<!-- water_gbm_lumped_i<- gbm(model, -->
+<!--              data=training,  -->
+<!--              distribution="bernoulli", -->
+<!--              n.trees=400, -->
+<!--              shrinkage=0.1, -->
+<!--              interaction.depth=2, -->
+<!--              bag.fraction=0.50, -->
+<!--              #train.fraction=1, -->
+<!--              n.minobsinnode=10, -->
+<!--              cv.folds=10, # that error occurs when you have variable levels that exist in the test set which don't exist in the training set. -->
+<!--              keep.data=TRUE, -->
+<!--              class.stratify.cv=TRUE, -->
+<!--              verbose="CV") -->
+<!-- #jpeg(paste("/Users/owner/Desktop/crypto/ec/","lumped_perf",'.jpg',sep='')) -->
+<!-- gbm.perf(water_gbm_lumped_i) -->
+<!-- p<-(water_gbm_lumped_i) -->
+<!-- ``` -->
+
+
+
+```{r}
+best.iter<-gbm.perf(water_gbm_lumped)
+gbm:::interact.gbm(water_gbm_lumped, data=USGS_cc4_lulc, i.var=c("Surface_runoff","Runoff"), best.iter)
+gbm:::interact.gbm(water_gbm_lumped, data=USGS_cc4_lulc, i.var=c("Cultivated","Runoff"), best.iter)
+```
+
+
+#summary
+```{r}
+par(mar = c(5, 14, 1, 1))
+# summary(
+#  water_gbm_lumped , 
+#   cBars = 10,
+#   method = relative.influence, # also can use permutation.test.gbm
+#   las = 2
+#   )
+
+summary(
+ water_gbm_lumped , 
+  cBars = 10,
+  method = relative.influence, # also can use permutation.test.gbm
+  las = 2
+  )
+
+#boxplot(USGS_cc4_lulc$lulc90~USGS_cc4_lulc$detect )
+#boxplot(log(as.numeric(USGS_cc4_lulc$Surface_runoff )) ~USGS_cc4_lulc$Detect )
+
+#percent positive in summer & winter
+#length(USGS_cc4_lulc[USGS_cc4_lulc$detect==1&USGS_cc4_lulc$summer==1,1])/length(USGS_cc4_lulc[USGS_cc4_lulc$summer==1,1])
+#length(USGS_cc4_lulc[USGS_cc4_lulc$detect==1&USGS_cc4_lulc$winter==1,1])/length(USGS_cc4_lulc[USGS_cc4_lulc$winter==1,1])
+#print(water_gbm)
+
+```
+
+#n a ROC curve the true positive rate (Sensitivity) is plotted in function of the false positive rate (100-Specificity) for different cut-off points of a parameter.
+```{r}
+preds <- predict.gbm( water_gbm_lumped, test,n.trees=
+                        #water_gbm$gbm.call$best.trees
+                        class(gbm.perf(water_gbm_lumped)),
+                      type="response")
+calc.deviance(obs=as.numeric(test$Detect ) , pred=preds
+              , calc.mean=TRUE
+              )
+roc_obj <- roc(test$Detect ,preds) #roc(response,predictor)
+auc(roc_obj)
+#jpeg(paste("/Users/owner/Desktop/crypto/ec/","roc_lumped",'.jpg',sep=''))
+plot(roc_obj)
+#dev.off()
+plot(test$Detect ,preds)
+
+predict_binary<-as.factor(ifelse(preds>0.5,1,0) )
+test_obs<-as.factor(test$Detect)
+confusionMatrix(predict_binary,test_obs)
+```
+
+
+#n a ROC curve the true positive rate (Sensitivity) is plotted in function of the false positive rate (100-Specificity) for different cut-off points of a parameter.
+```{r}
+preds <- predict.gbm( water_gbm_lumped, test,n.trees=
+                        #water_gbm$gbm.call$best.trees
+                        class(gbm.perf(water_gbm_lumped)),
+                      type="response")
+calc.deviance(obs=as.numeric(test$Detect ) , pred=preds
+              , calc.mean=TRUE
+              )
+roc_obj <- roc(test$Detect ,preds) #roc(response,predictor)
+auc(roc_obj)
+#jpeg(paste("/Users/owner/Desktop/crypto/ec/","roc_lumped",'.jpg',sep=''))
+plot(roc_obj)
+#dev.off()
+plot(test$Detect ,preds)
+
+predict_binary<-as.factor(ifelse(preds>0.5,1,0) )
+test_obs<-as.factor(test$Detect)
+confusionMatrix(predict_binary,test_obs)
+```
+
+#Partial dependence plots. After the most relevant variables have been identified, the next step is to attempt to understand how the response variable changes based on these variables. 
+#PDPs plot the change in the average predicted value as specified feature(s) vary over their marginal distribution. 
+```{r}
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","relative_influence",'.jpg',sep=''))
+par(mar = c(5, 11, 1, 1))
+summary(
+ water_gbm_lumped , 
+  cBars = 10,
+  method = relative.influence, # also can use permutation.test.gbm
+  las = 2
+  )
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","runoff",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "runoff", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+#+scale_y_continuous(labels = scales::dollar)
+ #+scale_y_continuous(labels = scales::marginal effect )
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","Surface_runoff",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Surface_runoff", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","Max_temperature",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Max_temperature", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","Min_temperature",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Min_temperature", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","Runoff",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Runoff", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","Developed",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Developed", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","Forest",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Forest", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","Cultivated",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Cultivated", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","Watershed_Area",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Watershed_Area", n.trees = water_gbm_lumped$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+#partialPlot(boston.rf, pred.data = boston, x.var = "lstat",cex.lab=2.3)
+
+
+
+```
+
+#PDP for interactive terms
+```{r}
+jpeg(paste("/Users/owner/Desktop/crypto/ec/","relative_influence_i",'.jpg',sep=''))
+par(mar = c(5, 14, 1, 1))
+summary(
+ water_gbm_lumped , 
+  cBars = 10,
+  method = relative.influence, # also can use permutation.test.gbm
+  las = 2
+  )
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Surface_runoff_i",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Surface_runoff", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Runoff_Surface_runoff_i",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Runoff_Surface_runoff", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Temperature_Surface_runoff_i",'.jpg',sep=''))
+water_gbm_lumped %>%
+  partial(pred.var =  "Temperature_Surface_runoff", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Developed_Surface_runoff",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Developed_Surface_runoff", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Developed_Runoff",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Developed_Runoff", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Temperature_i",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Temperature", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Forest_Surface_runoff",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Forest_Surface_runoff", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Forest_Runoff",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Forest_Runoff", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Runoff_i",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Runoff", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Forest_i",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Forest", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Developed_i",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Developed", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Cultivated_i",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Cultivated", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+dev.off()
+
+jpeg(paste("/Users/owner/Desktop/crypto/cry/","Watershed_Area_i",'.jpg',sep=''))
+water_gbm_lumped_i %>%
+  partial(pred.var =  "Watershed_Area", n.trees = water_gbm_lumped_i$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)+theme(axis.text=element_text(size=21),
+        axis.title=element_text(size=24
+                                #,face="bold"
+                                ))
+#partialPlot(boston.rf, pred.data = boston, x.var = "lstat",cex.lab=2.3)
+
+
+
+```
+
+
+```{r}
+pretty.gbm.tree(water_gbm_lumped,i.tree=40)
+```
+
+```{r}
+library(dismo)
+data(Anguilla_train)
+head(Anguilla_train)
+angaus.tc5.lr01 <- gbm.step(data=Anguilla_train, gbm.x = 3:13, gbm.y = 2,
+                        family = "bernoulli", tree.complexity = 5,                         learning.rate = 0.01, bag.fraction = 0.5)
+
+angaus.tc5.lr005 <- gbm.step(data=Anguilla_train, gbm.x = 3:13, gbm.y = 2, 
+                      family = "bernoulli", tree.complexity = 5,
+                      learning.rate = 0.005, bag.fraction = 0.5)
+
+find.int <- gbm.interactions(angaus.tc5.lr005)
+find.int$interactions
+```
+
+
+
+
+
+
+
+
+
+#log
+```{r}
+
+USGS_cc4_lulc<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="TAVG"] <- "Temperature"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="storm"] <- "Surface_runoff"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc21"] <- "Developed_OpenSpace"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc22"] <- "Developed_LowIntensity"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc41"] <- "Forest"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc81"] <- "Pasture"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc82"] <- "Cultivated_Crops"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="detect"] <- "Detect"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="DrainageAreaMeasure.MeasureValue"] <- "Watershed_Area"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="runoff"] <- "log_runoff"
+
+USGS_cc4_lulc_log<-USGS_cc4_lulc
+
+USGS_cc4_lulc_log$log_runoff<-log(USGS_cc4_lulc_log$log_runoff)
+#Partitioning the data and running a GBM
+
+#Creating training and test sets
+set.seed(123) #uses a fixed seed so that every call will result in the same output.
+
+USGS_cc4_lulc_log<-USGS_cc4_lulc_log[,c(36:38,29,26,3:7)]
+
+intrain<-createDataPartition(y=USGS_cc4_lulc_log$Detect ,
+                             p=0.8,
+                             list=FALSE)
+#class(intrain) "matrix"
+
+test<-USGS_cc4_lulc_log[-intrain,]
+training<-USGS_cc4_lulc_log[intrain,]
+
+dim(test)
+dim(training)
+```
+
+
+<!-- #add summer and winter -->
+<!-- ```{r} -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$summer<-0 -->
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws[USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$month==6|USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$month==7|USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$month ==8 ,]$summer<-1 -->
+<!-- summary(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$summer) -->
+
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$winter<-0 -->
+<!-- USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws[USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$month==12|USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$month==1|USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$month ==2 ,]$winter<-1 -->
+<!-- summary(USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws$winter) -->
+
+<!-- ``` -->
+
+#run the model
+```{r}
+
+USGS_cc4_lulc<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws
+
+#Partitioning the data and running a GBM
+
+#Creating training and test sets
+set.seed(123) #uses a fixed seed so that every call will result in the same output.
+
+USGS_cc4_lulc<-USGS_cc4_lulc[,c(36:38,29,26,2:16)]
+
+intrain<-createDataPartition(y=USGS_cc4_lulc$detect ,
+                             p=0.8,
+                             list=FALSE)
+#class(intrain) "matrix"
+
+test<-USGS_cc4_lulc[-intrain,]
+training<-USGS_cc4_lulc[intrain,]
+
+dim(test)
+dim(training)
+```
+
+
+<!-- #run the model -->
+<!-- ```{r} -->
+
+<!-- #Partitioning the data and running a GBM -->
+
+<!-- #Creating training and test sets -->
+<!-- set.seed(21) #uses a fixed seed so that every call will result in the same output. -->
+<!-- intrain<-createDataPartition(y=USGS_cc4_lu21$detect , -->
+<!--                              p=0.8, -->
+<!--                              list=FALSE) -->
+<!-- #class(intrain) "matrix" -->
+
+<!-- test<-USGS_cc4_lu21[-intrain,] -->
+<!-- training<-USGS_cc4_lu21[intrain,] -->
+
+<!-- ``` -->
+
+<!-- #fake big model -->
+<!-- ```{r} -->
+<!-- load("/Users/owner/Desktop/crypto/USGS_cc4_lu21.Rdata") -->
+<!-- #USGS_cc4_lu21[,24]<-as.numeric(USGS_cc4_lu21[,24]) -->
+<!-- fake<-USGS_cc4_lu21[,c(11,14,21,24)] -->
+<!-- fake$DrainageAreaMeasure.MeasureValue2<-(runif(125, min= min(fake$DrainageAreaMeasure.MeasureValue) , max=max(fake$DrainageAreaMeasure.MeasureValue)) ) -->
+<!-- fake$runoff2 <-(runif(125, min= min(fake$runoff ) , max=max(fake$runoff )) ) -->
+<!-- fake$percent2<-(runif(125, min= 0 , max= 1) ) -->
+<!-- head(fake) -->
+<!-- set.seed(21) #uses a fixed seed so that every call will result in the same output. -->
+<!-- intrain<-createDataPartition(y=fake$detect , -->
+<!--                              p=0.8, -->
+<!--                              list=FALSE) -->
+<!-- #class(intrain) "matrix" -->
+
+<!-- test<-fake[-intrain,] -->
+<!-- training<-fake[intrain,] -->
+<!-- model<-as.formula(paste(colnames(fake)[1], "~",      paste(colnames(fake)[c(2:7)], collapse="+"), #families -->
+<!--                         sep = "")) -->
+<!-- #that error message typically means you don’t have values for a variable represented in the model building process.  -->
+<!-- water_gbm<- gbm(model, -->
+<!--              data=training,  -->
+<!--              distribution="bernoulli", -->
+<!--              n.trees=100, -->
+<!--              shrinkage=0.1, -->
+<!--              interaction.depth=1, -->
+<!--              bag.fraction=0.50, -->
+<!--              #train.fraction=1, -->
+<!--              n.minobsinnode=10, -->
+<!--              cv.folds=10, -->
+<!--              keep.data=TRUE, -->
+<!--              class.stratify.cv=TRUE, -->
+<!--              verbose="CV") -->
+
+<!-- ``` -->
+
+<!-- #the model -->
+<!-- ```{r} -->
+<!-- # generalized boosted regression model formula -->
+<!-- #model<-as.formula(fake_glm_data$cry_detect~fake_glm_data$runoff+fake_glm_data$summer+fake_glm_data$watershed_size+fake_glm_data$urb+fake_glm_data$temp ) -->
+<!-- USGS_cc4_lu21[,24]<-as.numeric(USGS_cc4_lu21[,24]) -->
+<!-- model<-as.formula(paste(colnames(USGS_cc4_lu21)[11], "~",      paste(colnames(USGS_cc4_lu21)[c(14,21,24)], collapse="+"), #families -->
+<!--                         sep = "")) -->
+<!-- #that error message typically means you don’t have values for a variable represented in the model building process.  -->
+<!-- water_gbm<- gbm(model, -->
+<!--              data=training,  -->
+<!--              distribution="bernoulli", -->
+<!--              n.trees=100, -->
+<!--              shrinkage=0.1, -->
+<!--              interaction.depth=1, -->
+<!--              bag.fraction=0.50, -->
+<!--              #train.fraction=1, -->
+<!--              n.minobsinnode=10, -->
+<!--              cv.folds=10, -->
+<!--              keep.data=TRUE, -->
+<!--              class.stratify.cv=TRUE, -->
+<!--              verbose="CV") -->
+
+<!-- ``` -->
+
+#look at the data
+```{r}
+boxplot(as.numeric(USGS_cc4_lulc$detect)~(USGS_cc4_lulc$GAGE_ID))
+boxplot(log(as.numeric(USGS_cc4_lulc$runoff ))~(USGS_cc4_lulc$detect ))
+boxplot((as.numeric(USGS_cc4_lulc$lulc21 ))~(USGS_cc4_lulc$detect ))
+boxplot((as.numeric(USGS_cc4_lulc$lulc41 ))~(USGS_cc4_lulc$detect ))
+boxplot((as.numeric(USGS_cc4_lulc$lulc81 ))~(USGS_cc4_lulc$detect ))
+boxplot(log(as.numeric(USGS_cc4_lulc$DrainageAreaMeasure.MeasureValue ))~(USGS_cc4_lulc$detect ))
+```
+
+<!-- #as.factor -->
+<!-- ```{r} -->
+<!-- for (c in c(5,9,13,17,21,25,29,33,46,53)) -->
+<!-- { -->
+<!--  print (test[,c]%in%training[,c]) -->
+<!--   print (class(test[,c])) -->
+<!--   training[,c]<-as.factor(training[,c]) -->
+<!--   test[,c]<-as.factor(test[,c]) -->
+<!-- } -->
+<!-- #test -->
+<!-- #training -->
+
+<!-- #43], "~",      paste(colnames(USGS_cc4_lulc)[c(5,9,13,17,21,25,29,33,46,53 -->
+<!-- ``` -->
+
+
+#the model
+```{r}
+# generalized boosted regression model formula
+#model<-as.formula(fake_glm_data$cry_detect~fake_glm_data$runoff+fake_glm_data$summer+fake_glm_data$watershed_size+fake_glm_data$urb+fake_glm_data$temp )
+#USGS_cc4_lu21[,24]<-as.numeric(USGS_cc4_lu21[,24])
+# summary(lm(as.numeric(USGS_cc4_lulc$detect))~
+#              USGS_cc4_lulc$lulc41 + 
+#              USGS_cc4_lulc$lulc81 + 
+#              USGS_cc4_lulc$lulc90 + 
+#              USGS_cc4_lulc$lulc21 + 
+#              USGS_cc4_lulc$lulc11 + 
+#              USGS_cc4_lulc$lulc43 +
+#              USGS_cc4_lulc$lulc52 +
+#              USGS_cc4_lulc$lulc22 +
+#              USGS_cc4_lulc$lulc23 +
+#              USGS_cc4_lulc$DrainageAreaMeasure.MeasureValue + 
+#              USGS_cc4_lulc$runoff+USGS_cc4_lulc$storm
+#             # USGS_cc4_lulc$summer+USGS_cc4_lulc$winter
+#            )
+#USGS_cc4_lulc[,9]<-as.factor(USGS_cc4_lulc[,9])
+
+model<-as.formula(paste(colnames(USGS_cc4_lulc)[5], "~",      paste(colnames(USGS_cc4_lulc)[c(1:4,6:20)], collapse="+"), #families
+                        sep = ""))
+#that error message typically means you don’t have values for a variable represented in the model building process. 
+water_gbm<- gbm(model,
+             data=training, 
+             distribution="bernoulli",
+             n.trees=400,
+             shrinkage=0.1,
+             interaction.depth=1,
+             bag.fraction=0.50,
+             #train.fraction=1,
+             n.minobsinnode=10,
+             cv.folds=10, # that error occurs when you have variable levels that exist in the test set which don't exist in the training set.
+             keep.data=TRUE,
+             class.stratify.cv=TRUE,
+             verbose="CV")
+gbm.perf(water_gbm)
+
+```
+
+
+<!-- #the model (clean input data) -->
+<!-- ```{r} -->
+<!-- # generalized boosted regression model formula -->
+<!-- #model<-as.formula(fake_glm_data$cry_detect~fake_glm_data$runoff+fake_glm_data$summer+fake_glm_data$watershed_size+fake_glm_data$urb+fake_glm_data$temp ) -->
+<!-- #USGS_cc4_lu21[,24]<-as.numeric(USGS_cc4_lu21[,24]) -->
+<!-- #summary(lm(as.numeric(USGS_cc4_lulc$detect)~USGS_cc4_lulc$lulc41 + USGS_cc4_lulc$lulc81 + USGS_cc4_lulc$lulc90 + USGS_cc4_lulc$lulc21 + USGS_cc4_lulc$lulc11 + USGS_cc4_lulc$lulc43 +USGS_cc4_lulc$DrainageAreaMeasure.MeasureValue + USGS_cc4_lulc$runoff)) -->
+<!-- #USGS_cc4_lulc<-USGS_cc4_lulc[,c(5,9,13,17,21,25,29,33,43,46,53)] -->
+<!-- model<-as.formula(paste(colnames(USGS_cc4_lulc)[9], "~",      paste(colnames(USGS_cc4_lulc)[c(1:8,10,11 -->
+<!--                                                                                                )], collapse="+"), #families -->
+<!--                         sep = "")) -->
+<!-- #that error message typically means you don’t have values for a variable represented in the model building process. -->
+<!-- water_gbm<- gbm(model, -->
+<!--              data=training, -->
+<!--              distribution="bernoulli", -->
+<!--              n.trees=100, -->
+<!--              shrinkage=0.1, -->
+<!--              interaction.depth=1, -->
+<!--              bag.fraction=0.50, -->
+<!--              #train.fraction=1, -->
+<!--              n.minobsinnode=10, -->
+<!--              cv.folds=10, # that error occurs when you have variable levels that exist in the test set which don't exist in the training set. -->
+<!--              keep.data=TRUE, -->
+<!--              class.stratify.cv=TRUE, -->
+<!--              verbose="CV") -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- for (c in c(5,9,13,17,21,25,29,33,43,46,53)) -->
+<!-- { -->
+<!--  print (test[,c]%in%training[,c]) -->
+<!--   print (class(test[,c])) -->
+<!-- } -->
+<!-- #test -->
+<!-- #training -->
+
+<!-- #43], "~",      paste(colnames(USGS_cc4_lulc)[c(5,9,13,17,21,25,29,33,46,53 -->
+<!-- ``` -->
+
+
+#lulc41 forest, #lulc90 wetland #21 developed #52	Shrub #11	Open Water #81	Pasture
+```{r}
+summary(water_gbm)
+#boxplot(USGS_cc4_lulc$lulc90~USGS_cc4_lulc$detect )
+#boxplot(log(as.numeric(USGS_cc4_lulc$runoff)) ~USGS_cc4_lulc$detect )
+
+#percent positive in summer & winter
+length(USGS_cc4_lulc[USGS_cc4_lulc$detect==1&USGS_cc4_lulc$summer==1,1])/length(USGS_cc4_lulc[USGS_cc4_lulc$summer==1,1])
+length(USGS_cc4_lulc[USGS_cc4_lulc$detect==1&USGS_cc4_lulc$winter==1,1])/length(USGS_cc4_lulc[USGS_cc4_lulc$winter==1,1])
+
+
+```
+
+#predict on training
+```{r}
+gbmTrainPredictions = predict(object =water_gbm  ,
+                              #newdata = train,
+                             # n.trees = 100,
+                              type = "response")
+calibrate.plot(training$detect , gbmTrainPredictions, xlim=c(0,1), ylim=c(0,1))
+```
+
+#predict on test
+```{r}
+gbmTrainPredictions = predict(object =water_gbm  ,
+                              newdata = test,
+                             # n.trees = 100,
+                              type = "response")
+
+plot(test$detect,gbmTrainPredictions,ylim=c(0,1))
+```
+
+
+#run the model (only run mean LULC>10% (lulc21,22,41,81,82))
+```{r}
+
+USGS_cc4_lulc<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="TAVG"] <- "Temperature"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="storm"] <- "Surface_runoff"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc21"] <- "Developed_OpenSpace"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc22"] <- "Developed_LowIntensity"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc41"] <- "Forest"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc81"] <- "Pasture"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc82"] <- "Cultivated_Crops"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="detect"] <- "Detect"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="DrainageAreaMeasure.MeasureValue"] <- "Watershed_Area"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="runoff"] <- "Runoff"
+
+#Partitioning the data and running a GBM
+
+#Creating training and test sets
+set.seed(123) #uses a fixed seed so that every call will result in the same output.
+
+USGS_cc4_lulc<-USGS_cc4_lulc[,c(36:38,29,26,3:7)]
+
+intrain<-createDataPartition(y=USGS_cc4_lulc$Detect ,
+                             p=0.8,
+                             list=FALSE)
+#class(intrain) "matrix"
+
+test<-USGS_cc4_lulc[-intrain,]
+training<-USGS_cc4_lulc[intrain,]
+
+dim(test)
+dim(training)
+```
+#plot hist
+```{r}
+for (v in c(1:length(colnames(USGS_cc4_lulc))))
+            {
+  if (!class(USGS_cc4_lulc[,v])=="character")
+  {
+    jpeg(paste("/Users/owner/Desktop/crypto/cry/",colnames(USGS_cc4_lulc)[v],'.jpg',sep=''))
+
+  hist(USGS_cc4_lulc[,v],xlab=colnames(USGS_cc4_lulc)[v],main="",ylim=c(0,100))
+dev.off()
+  }     
+      }
+```
+
+
+#the model
+```{r}
+# generalized boosted regression model formula
+#model<-as.formula(fake_glm_data$cry_detect~fake_glm_data$runoff+fake_glm_data$summer+fake_glm_data$watershed_size+fake_glm_data$urb+fake_glm_data$temp )
+#USGS_cc4_lu21[,24]<-as.numeric(USGS_cc4_lu21[,24])
+
+#USGS_cc4_lulc[,9]<-as.factor(USGS_cc4_lulc[,9])
+
+model<-as.formula(paste(colnames(USGS_cc4_lulc)[5], "~",      paste(colnames(USGS_cc4_lulc)[c(1:4,6:10)], collapse="+"), #families
+                        sep = ""))
+#that error message typically means you don’t have values for a variable represented in the model building process. 
+water_gbm<- gbm(model,
+             data=training, 
+             distribution="bernoulli",
+             n.trees=600,
+             shrinkage=0.1,
+             interaction.depth=1,
+             bag.fraction=0.50,
+             #train.fraction=1,
+             n.minobsinnode=10,
+             cv.folds=10, # that error occurs when you have variable levels that exist in the test set which don't exist in the training set.
+             keep.data=TRUE,
+             class.stratify.cv=TRUE,
+             verbose="CV")
+# find index for n trees with minimum CV error
+min_MSE <- which.min(water_gbm$cv.error)
+print(min_MSE)
+gbm.perf(water_gbm
+         #,oobag.curve =TRUE
+         ) #the optimal number of boosting iterations 
+#an independent test set (test), out-of-bag estima- tion (OOB), and v-fold cross validation (cv)
+#overlay a right y-axis is added to the training and test error plot and the estimated cumulative improvement in the loss function is plotted versus the iteration number.
+#gbm.perf(water_gbm,method = "OOB")
+
+#print the first and last trees
+#plot(water_gbm$trees,water_gbm$train.error)
+```
+
+```{r}
+summary(lm(USGS_cc4_lulc$Detect~USGS_cc4_lulc$Runoff+USGS_cc4_lulc$Surface_runoff+USGS_cc4_lulc$Temperature+USGS_cc4_lulc$Watershed_Area+USGS_cc4_lulc$Developed_OpenSpace+USGS_cc4_lulc$Developed_LowIntensity+USGS_cc4_lulc$Forest+USGS_cc4_lulc$Cultivated_Crops+USGS_cc4_lulc$Pasture))
+```
+
+
+#lulc41 forest, #lulc90 wetland #21 developed #52	Shrub #11	Open Water #81	Pasture
+```{r}
+par(mar = c(5, 11, 1, 1))
+summary(
+ water_gbm, 
+  cBars = 10,
+  method = relative.influence, # also can use permutation.test.gbm
+  las = 2
+  )
+#boxplot(USGS_cc4_lulc$lulc90~USGS_cc4_lulc$detect )
+boxplot(log(as.numeric(USGS_cc4_lulc$Surface_runoff )) ~USGS_cc4_lulc$Detect )
+
+#percent positive in summer & winter
+length(USGS_cc4_lulc[USGS_cc4_lulc$detect==1&USGS_cc4_lulc$summer==1,1])/length(USGS_cc4_lulc[USGS_cc4_lulc$summer==1,1])
+length(USGS_cc4_lulc[USGS_cc4_lulc$detect==1&USGS_cc4_lulc$winter==1,1])/length(USGS_cc4_lulc[USGS_cc4_lulc$winter==1,1])
+print(water_gbm)
+
+```
+
+#n a ROC curve the true positive rate (Sensitivity) is plotted in function of the false positive rate (100-Specificity) for different cut-off points of a parameter.
+```{r}
+preds <- predict.gbm( water_gbm, test,n.trees=
+                        #water_gbm$gbm.call$best.trees
+                        class(gbm.perf(water_gbm)),
+                      type="response")
+calc.deviance(obs=as.numeric(test$Detect ) , pred=preds
+              , calc.mean=TRUE
+              )
+roc_obj <- roc(test$Detect ,preds)
+auc(roc_obj)
+plot(roc_obj)
+plot(test$Detect ,preds)
+predict_binary<-as.factor(ifelse(preds>0.5,1,0) )
+test_obs<-as.factor(test$Detect)
+confusionMatrix(predict_binary,test_obs)
+```
+
+
+#Partial dependence plots. After the most relevant variables have been identified, the next step is to attempt to understand how the response variable changes based on these variables. 
+#PDPs plot the change in the average predicted value as specified feature(s) vary over their marginal distribution. 
+```{r}
+summary(water_gbm)
+ water_gbm %>%
+  partial(pred.var =  "Surface_runoff", n.trees = water_gbm$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)
+#+scale_y_continuous(labels = scales::dollar)
+ #+scale_y_continuous(labels = scales::marginal effect )
+
+water_gbm %>%
+  partial(pred.var =  "Forest", n.trees = water_gbm$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)
+water_gbm %>%
+  partial(pred.var =  "Cultivated_Crops", n.trees = water_gbm$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)
+ water_gbm %>%
+   partial(pred.var =  "Runoff", n.trees = water_gbm$n.trees, grid.resolution = 100) %>%
+   autoplot(rug = TRUE, train = training)
+water_gbm %>%
+  partial(pred.var =  "Watershed_Area", n.trees = water_gbm$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)
+water_gbm %>%
+  partial(pred.var =  "Developed_OpenSpace", n.trees = water_gbm$n.trees, grid.resolution = 100) %>%autoplot(rug = TRUE, train = training)
+water_gbm %>%
+  partial(pred.var =  "Temperature", n.trees = water_gbm$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)
+water_gbm %>%
+  partial(pred.var =  "Pasture", n.trees = water_gbm$n.trees, grid.resolution = 100) %>%
+  autoplot(rug = TRUE, train = training)
+```
+
+
+
+
+
+
+
+
+
+
+
+#log
+```{r}
+
+USGS_cc4_lulc<-USGS_cc4_lulc_CntlPlains_EastHghlnds_NorthEast_cry_ws
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="TAVG"] <- "Temperature"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="storm"] <- "Surface_runoff"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc21"] <- "Developed_OpenSpace"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc22"] <- "Developed_LowIntensity"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc41"] <- "Forest"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc81"] <- "Pasture"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="lulc82"] <- "Cultivated_Crops"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="detect"] <- "Detect"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="DrainageAreaMeasure.MeasureValue"] <- "Watershed_Area"
+colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="runoff"] <- "log_runoff"
+
+USGS_cc4_lulc_log<-USGS_cc4_lulc
+
+USGS_cc4_lulc_log$log_runoff<-log(USGS_cc4_lulc_log$log_runoff)
+#Partitioning the data and running a GBM
+
+#Creating training and test sets
+set.seed(123) #uses a fixed seed so that every call will result in the same output.
+
+USGS_cc4_lulc_log<-USGS_cc4_lulc_log[,c(36:38,29,26,3:7)]
+
+intrain<-createDataPartition(y=USGS_cc4_lulc_log$Detect ,
+                             p=0.8,
+                             list=FALSE)
+#class(intrain) "matrix"
+
+test<-USGS_cc4_lulc_log[-intrain,]
+training<-USGS_cc4_lulc_log[intrain,]
+
+dim(test)
+dim(training)
+```
+
+
+#the model
+```{r}
+model_log<-as.formula(paste(colnames(USGS_cc4_lulc_log)[5], "~",      paste(colnames(USGS_cc4_lulc_log)[c(1:4,6:10)], collapse="+"), #families
+                        sep = ""))
+#that error message typically means you don’t have values for a variable represented in the model building process. 
+water_gbm_log<- gbm(model_log,
+             data=training, 
+             distribution="bernoulli",
+             n.trees=600,
+             shrinkage=0.1,
+             interaction.depth=1,
+             bag.fraction=0.50,
+             #train.fraction=1,
+             n.minobsinnode=10,
+             cv.folds=10, # that error occurs when you have variable levels that exist in the test set which don't exist in the training set.
+             keep.data=TRUE,
+             class.stratify.cv=TRUE,
+             verbose="CV")
+
+gbm.perf(water_gbm_log
+         #,oobag.curve =TRUE
+         ) #the optimal number of boosting iterations 
+#an independent test set (test), out-of-bag estima- tion (OOB), and v-fold cross validation (cv)
+#overlay a right y-axis is added to the training and test error plot and the estimated cumulative improvement in the loss function is plotted versus the iteration number.
+#gbm.perf(water_gbm,method = "OOB")
+
+#print the first and last trees
+#plot(water_gbm$trees,water_gbm$train.error)
+```
+
+
+#lulc41 forest, #lulc90 wetland #21 developed #52	Shrub #11	Open Water #81	Pasture
+```{r}
+par(mar = c(5, 11, 1, 1))
+summary(
+ water_gbm_log, 
+  cBars = 10,
+  method = relative.influence, # also can use permutation.test.gbm
+  las = 2
+  )
+
+print(water_gbm_log)
+
+```
+
+
+
+
+#find high runoff sampled watershed
+```{r}
+mean_runoff<-aggregate(USGS_cc4[,"runoff"], list(USGS_cc4$MonitoringLocationIdentifier ), mean)
+
+median_runoff<-aggregate(USGS_cc4[,"runoff"], list(USGS_cc4$MonitoringLocationIdentifier ), median )
+
+n_obs<-as.data.frame(table(USGS_cc4$ MonitoringLocationIdentifier))
+
+mean_runoff_obs<-merge(mean_runoff,n_obs,by.x= "Group.1",by.y= "Var1")
+
+mean_runoff_obs[mean_runoff_obs$x>3,]
+mean_runoff_obs[mean_runoff_obs$x<1,]
+
+```
+
+
+#find high concentration sampled watershed (non detect sample w conc?)
+```{r}
+USGS_cc4$ResultMeasureValue<-as.numeric(USGS_cc4$ResultMeasureValue)
+mean_conc<-aggregate(USGS_cc4[,"ResultMeasureValue" ], list(USGS_cc4$MonitoringLocationIdentifier), mean)
+
+#median_runoff<-aggregate(USGS_cc4[,"runoff"], list(USGS_cc4$MonitoringLocationIdentifier ), median )
+
+n_obs<-as.data.frame(table(USGS_cc4$ MonitoringLocationIdentifier))
+
+mean_conc_obs<-merge(mean_conc,n_obs,by.x= "Group.1",by.y= "Var1")
+
+mean_conc_obs[mean_conc_obs$x>60,]
+mean_conc_obs[mean_conc_obs$x<30,]
+
+USGS_04087214<-USGS_cc4[USGS_cc4$MonitoringLocationIdentifier=="USGS-04087214",]
+par(mar=c(3,3,3,3))
+plot(USGS_04087214$runoff ,USGS_04087214$ResultMeasureValue )
+```
+
+```{r}
+par(mar=c(1,1,1,1))
+plot(USGS_04087214$runoff ,USGS_04087214$ResultMeasureValue )
+par(mar=c(1.5,1.5,1.5,1.5))
+plot(USGS_04087214$month ,USGS_04087214$ResultMeasureValue )
+```
+
+
+#need to get Q in previous 48 days 
+```{r}
+USGS_cc4$storm<-" "
+for (i in c(1:length(USGS_cc4$USGS)))
+#for (i in c(41:59))
+{
+siteNo <- as.character(USGS_cc4[i,]$USGS)
+pCode <- "00060" #discharge
+start.date <- as.character(as.Date(USGS_cc4[i,]$ActivityStartDate,format=("%Y-%m-%d"))-48)
+end.date <- as.character(USGS_cc4[i,]$ActivityStartDate)
+
+if (nrow(readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = start.date,
+                     endDate = end.date))>0)
+{
+  print(nrow(readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = start.date,
+                     endDate = end.date)))
+  USGS_cc4[i,]$Q<- readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = end.date,
+                     endDate = end.date)$X_00060_00003
+  
+ st<- paste("Q_48days",i,sep='_')
+  st<- readNWISdv(siteNumbers = siteNo,
+                     parameterCd = pCode,
+                     startDate = start.date,
+                     endDate = end.date)
+  print (paste("Q_48days",i,sep='_'))
+  #hysep(s1372500$X105182_00060_00003,Dates=2/1/2019,da=1)
+  #head(s1372500)
+  #agency_cd site_no datetime X105182_00060_00003 X105182_00060_00003_cd
+#1      USGS 1372500 2/1/2019                 399                      P
+test<-hysep(as.integer(st$X_00060_00003),Dates=
+              #2008-09-27
+              #9/27/2008
+              st$Date
+            ,da=1)
+print(test)
+USGS_cc4[i,]$storm<-(1-test$BaseQ[49]/test$Flow[49])
+}
+else
+{
+ USGS_cc4[i,]$storm<-NA 
+ USGS_cc4[i,]$Q<-NA 
+}
+  }
+head(USGS_cc4)
+plot(USGS_cc4$storm,as.numeric(USGS_cc4$runoff))
+                                
+```
+
+
+#fix unit
+```{r}
+#summary(USGS_cc2$ResultMeasure.MeasureUnitCode)
+               #/100L        #/l #/l                 % ocyst/100L oocyst/10L 
+#       100          0          0          0          3         63        272  
+
+#oocyst/10L
+USGS_cc4$oocyst10L<-" "
+
+USGS_cc4<-USGS_cc4[USGS_cc4$ResultMeasure.MeasureUnitCode=="oocyst/10L"|USGS_cc4$ResultMeasure.MeasureUnitCode=="ocyst/100L",]
+
+
+summary(USGS_cc4$ResultMeasureValue)
+i<-which(USGS_cc4$ResultMeasure.MeasureUnitCode=="oocyst/10L")
+{
+  USGS_cc4[i,]$oocyst10L<-as.numeric(as.character(USGS_cc4[i,]$ResultMeasureValue))
+}
+
+summary(as.numeric(USGS_cc4$oocyst10L))
+
+j<-which(USGS_cc4$ResultMeasure.MeasureUnitCode=="ocyst/100L")
+{
+  USGS_cc4[j,]$oocyst10L<-as.numeric(as.character(USGS_cc4[j,]$ResultMeasureValue))/10
+}
+summary(as.numeric(USGS_cc4$oocyst10L))
+```
+
+```{r}
+plot(USGS_cc4$runoff,USGS_cc4$oocyst10L)
+plot(USGS_cc4$nlcd_2,USGS_cc4$oocyst10L)
+plot(USGS_cc4$nlcd_8,USGS_cc4$oocyst10L)
+plot(USGS_cc4$storm ,USGS_cc4$oocyst10L)
+#plot(USGS_cc4$month ,USGS_cc4$oocyst10L)
+boxplot(as.numeric(USGS_cc4$oocyst10L)~USGS_cc4$month,ylab="oocyst/10L",xlab="month")
+boxplot(as.numeric(USGS_cc4$oocyst10L)~USGS_cc4$nlcd_2,ylab="oocyst/10L",xlab="month")
+#plot(USGS_cc4$month,USGS_cc4$detect)
+#plot(USGS_cc4[USGS_cc4$month=="6"|USGS_cc4$month=="7"|USGS_cc4$month=="8",]$runoff ,USGS_cc4[USGS_cc4$month=="6"|USGS_cc4$month=="7"|USGS_cc4$month=="8",]$oocyst10L)
+plot(USGS_cc4$MonitoringLocationIdentifier,USGS_cc4$oocyst10L,ylab="oocyst/10L")
+boxplot(as.numeric(USGS_cc4$oocyst10L)~USGS_cc4$MonitoringLocationIdentifier,ylab="oocyst/10L")
+plot((USGS_cc4$DrainageAreaMeasure.MeasureValue),USGS_cc4$oocyst10L,log="x")
+boxplot(as.numeric(USGS_cc4$oocyst10L)~USGS_cc4$DrainageAreaMeasure.MeasureValue ,ylab="oocyst/10L")
+```
+
+```{r}
+USGS_cc4$oocyst10L<-as.numeric(USGS_cc4$oocyst10L)
+USGS_cc4$runoff <-as.numeric(USGS_cc4$runoff )
+USGS_cc4$DrainageAreaMeasure.MeasureValue<-as.numeric(USGS_cc4$DrainageAreaMeasure.MeasureValue)
+USGS_cc4$storm<-as.numeric(USGS_cc4$storm)
+USGS_cc4$nlcd_2_8<-as.numeric(USGS_cc4$nlcd_2+USGS_cc4$nlcd_8)
+summary(lm(USGS_cc4$oocyst10L~USGS_cc4$runoff+USGS_cc4$DrainageAreaMeasure.MeasureValue+USGS_cc4$storm+USGS_cc4$nlcd_8))
+```
+
+```{r}
+small<-USGS_cc4[USGS_cc4$DrainageAreaMeasure.MeasureValue<=25,]
+plot(small$runoff,small$oocyst10L)
+boxplot(as.numeric(small$oocyst10L)~small$MonitoringLocationIdentifier)
+```
+
+
+```{r}
+write.csv(USGS_cc4,file="USGS_cc4.csv")
+```
+
+
+```{r}
+USGS_cc2<-USGS_cc2[is.na(USGS_cc2$Q)==F,]
+
+as.data.frame(table(USGS_cc2$MonitoringLocationIdentifier))
+summary(USGS_cc2$ResultMeasureValue)
+plot(USGS_cc2$Q,USGS_cc2$ResultMeasureValue)
+
+USGS_01553500<-USGS_cc2[USGS_cc2$MonitoringLocationIdentifier=="USGS-01553500",]
+plot(USGS_01553500$Q,USGS_01553500$ResultMeasureValue)
+
+#count[count$Freq>09,]
+
+USGS_03036500<-USGS_cc2[USGS_cc2$MonitoringLocationIdentifier=="USGS-03036500",]
+plot(USGS_03036500$Q,USGS_03036500$ResultMeasureValue)
+
+```
+
