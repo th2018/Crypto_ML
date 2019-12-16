@@ -1,0 +1,223 @@
+---
+title: "Arules_EC_Crypto"
+output: html_document
+---
+
+```{r}
+#install.packages("arules")
+library("arules")
+library("devtools")
+#install_github("mhahsler/arulesViz")
+#install.packages("arulesViz")
+library("arulesViz")
+```
+
+```{r}
+
+crypto<-read.csv("/Users/owner/Desktop/crypto/cry/narrowresult.csv",header=T             )
+summary(crypto)
+dim(crypto)
+crypto$ActivityStartDate<-as.Date(crypto$ActivityStartDate,"%Y-%m-%d")
+
+ec<-read.csv("/Users/owner/Desktop/crypto/ec/narrowresult-EC_PA_WI_OH.tsv",header=T,sep="\t")
+summary(ec)
+dim(ec)
+ec$ActivityStartDate<-as.Date(ec$ActivityStartDate,"%Y-%m-%d")
+ec_s<-read.csv("/Users/owner/Desktop/crypto/ec/station-EC_WI_PA_OH.csv",header=T,sep=',')
+summary(ec_s)
+dim(ec_s)
+
+
+gi<-read.csv("/Users/owner/Desktop/crypto/giardia/narrowresult.csv",header=T)
+gi$ActivityStartDate<-as.Date(gi$ActivityStartDate,"%m/%d/%y")
+```
+
+```{r}
+#crypto_ec<- full_join(crypto, ec,by = c("MonitoringLocationIdentifier", "ActivityStartDate"))
+crypto_ec<- merge(crypto, ec,by = c("MonitoringLocationIdentifier", "ActivityStartDate"))
+dim(crypto_ec)
+
+USGS_cc4_ec_s<-merge(USGS_cc4, ec_s,by = c("LongitudeMeasure"))
+
+crypto_ec<-crypto_ec[crypto_ec$MonitoringLocationIdentifier %in% USGS_cc4_ec_s$MonitoringLocationIdentifier,]
+
+crypto_ec_USGS<-crypto_ec[grepl("USGS", crypto_ec$MonitoringLocationIdentifier)==T,]   
+dim(crypto_ec_USGS)
+crypto_ec_USGS$USGS<-crypto_ec_USGS$MonitoringLocationIdentifier
+crypto_ec_USGS$USGS<-gsub('USGS-','',as.character(crypto_ec_USGS$USGS))
+crypto_ec_USGS_river<-crypto_ec_USGS[nchar(crypto_ec_USGS$USGS)==8,]
+dim(crypto_ec_USGS_river)
+```
+
+
+```{r}
+crypto_ec<-crypto_ec[,c("MonitoringLocationIdentifier", "ActivityStartDate","ResultMeasureValue.x","ResultMeasureValue.y")]
+colnames(crypto_ec)<-c("MonitoringLocationIdentifier", "ActivityStartDate","ResultMeasureValue.x","ResultMeasureValue.y")
+crypto_ec_gi<- merge(crypto_ec, gi,by = c("MonitoringLocationIdentifier", "ActivityStartDate"))
+dim(crypto_ec_gi)
+
+crypto_ec_gi<-crypto_ec_gi[crypto_ec_gi$MonitoringLocationIdentifier %in% USGS_cc4_ec_s$MonitoringLocationIdentifier,]
+
+crypto_ec_gi_USGS<-crypto_ec_gi[grepl("USGS", crypto_ec_gi$MonitoringLocationIdentifier)==T,]   
+dim(crypto_ec_gi_USGS)
+crypto_ec_gi_USGS$USGS<-crypto_ec_gi_USGS$MonitoringLocationIdentifier
+crypto_ec_gi_USGS$USGS<-gsub('USGS-','',as.character(crypto_ec_gi_USGS$USGS))
+crypto_ec_gi_USGS_river<-crypto_ec_gi_USGS[nchar(crypto_ec_gi_USGS$USGS)==8,]
+dim(crypto_ec_gi_USGS_river)
+```
+
+
+```{r}
+crypto_ec_USGS_river$crypto<-0
+#crypto_ec_USGS_river crypto_ec_USGS_river$ResultDetectionConditionText.x
+crypto_ec_USGS_river[  (crypto_ec_USGS_river$ResultMeasureValue.x)=="" ,]$crypto
+crypto_ec_USGS_river[as.numeric(as.character(crypto_ec_USGS_river$ResultMeasureValue.x))>0    &    !(crypto_ec_USGS_river$ResultMeasureValue.x)=="",]$crypto<-1
+
+crypto_ec_USGS_river$ec<-0
+crypto_ec_USGS_river[ as.numeric(as.character(crypto_ec_USGS_river$ResultMeasureValue.y))>235 &    !(crypto_ec_USGS_river$ResultMeasureValue.y)=="",]$ec<-1
+
+```
+
+
+```{r}
+crypto_ec_gi_USGS_river$crypto<-0
+#crypto_ec_USGS_river crypto_ec_USGS_river$ResultDetectionConditionText.x
+crypto_ec_gi_USGS_river[  (crypto_ec_gi_USGS_river$ResultMeasureValue.x)=="" ,]$crypto
+crypto_ec_gi_USGS_river[as.numeric(as.character(crypto_ec_gi_USGS_river$ResultMeasureValue.x))>0    &    !(crypto_ec_gi_USGS_river$ResultMeasureValue.x)=="",]$crypto<-1
+
+crypto_ec_gi_USGS_river$ec<-0
+crypto_ec_gi_USGS_river[ as.numeric(as.character(crypto_ec_gi_USGS_river$ResultMeasureValue.y))>235 &    !(crypto_ec_gi_USGS_river$ResultMeasureValue.y)=="",]$ec<-1
+
+crypto_ec_gi_USGS_river$gi<-0
+crypto_ec_gi_USGS_river[as.numeric(as.character(crypto_ec_gi_USGS_river$ResultMeasureValue))>0    &    !(crypto_ec_gi_USGS_river$ResultMeasureValue)=="",]$gi<-1
+```
+
+
+```{r}
+dim(crypto_ec_USGS_river[crypto_ec_USGS_river$crypto==1,])[1] #73 crypto +
+dim(crypto_ec_USGS_river[crypto_ec_USGS_river$ec==1,])[1]
+
+dim(crypto_ec_USGS_river[crypto_ec_USGS_river$crypto==1 & crypto_ec_USGS_river$ec==1,])[1]
+dim(crypto_ec_USGS_river[crypto_ec_USGS_river$crypto==1 & crypto_ec_USGS_river$ec==0,])[1]
+dim(crypto_ec_USGS_river[crypto_ec_USGS_river$crypto==0 & crypto_ec_USGS_river$ec==1,])[1]
+
+```
+
+
+#Ensure your transaction column and your item column are both factors
+```{r}
+crypto_ec_USGS_river$id<-as.factor(paste(crypto_ec_USGS_river$MonitoringLocationIdentifier,crypto_ec_USGS_river$ActivityStartDate,sep = "_"))
+
+```
+
+
+#Ensure your transaction column and your item column are both factors
+```{r}
+crypto_ec_gi_USGS_river$id<-as.factor(paste(crypto_ec_gi_USGS_river$MonitoringLocationIdentifier,crypto_ec_gi_USGS_river$ActivityStartDate,sep = "_"))
+
+```
+
+
+```{r}
+crypto_ec_id<-crypto_ec_USGS_river[,c("id","crypto","ec")]
+
+crypto_ec_id$crypto <- ordered(cut(crypto_ec_id$crypto, c(-0.5,0.5,1.5)),
+      labels = c("Crypto-", "Crypto+"))
+
+crypto_ec_id$ec <- ordered(cut(crypto_ec_id$ec, c(-0.5,0.5,1.5)),
+      labels = c("E. coli-", "E. coli+"))
+
+#crypto_ec_id2 <- split(crypto_ec_id$crypto, crypto_ec_id$id)
+
+#crypto_ec_id$crypto<-as.factor(crypto_ec_id$crypto)
+#crypto_ec_id$ec<-as.factor(crypto_ec_id$ec)
+head(crypto_ec_id)
+crypto_ec_id_transactions<-as(crypto_ec_id,"transactions")
+head(crypto_ec_id_transactions)
+```
+
+
+```{r}
+crypto_ec_gi_id<-crypto_ec_gi_USGS_river[,c("id","crypto","ec","gi")]
+
+crypto_ec_gi_id$crypto <- ordered(cut(crypto_ec_gi_id$crypto, c(-0.5,0.5,1.5)),
+      labels = c("Crypto-", "Crypto+"))
+
+crypto_ec_gi_id$ec <- ordered(cut(crypto_ec_gi_id$ec, c(-0.5,0.5,1.5)),
+      labels = c("E. coli-", "E. coli+"))
+
+crypto_ec_gi_id$gi <- ordered(cut(crypto_ec_gi_id$gi, c(-0.5,0.5,1.5)),
+      labels = c("Giardia-", "Giardia+"))
+
+#crypto_ec_id2 <- split(crypto_ec_id$crypto, crypto_ec_id$id)
+
+#crypto_ec_id$crypto<-as.factor(crypto_ec_id$crypto)
+#crypto_ec_id$ec<-as.factor(crypto_ec_id$ec)
+head(crypto_ec_gi_id)
+crypto_ec_gi_id_transactions<-as(crypto_ec_gi_id,"transactions")
+head(crypto_ec_gi_id_transactions)
+```
+
+
+```{r}
+crypto_ec_rules<-apriori(crypto_ec_id_transactions, parameter = list(support=0.01, confidence = 0.01,maxlen=2) )
+crypto_ec_rules
+crypto_ec_rules2<-(sort(crypto_ec_rules, by="support"))
+inspect((sort(crypto_ec_rules, by="support")))
+inspect((sort(crypto_ec_rules, by="confidence")))
+inspect((sort(crypto_ec_rules, by="lift")))
+```
+
+
+```{r}
+crypto_ec_gi_rules<-apriori(crypto_ec_gi_id_transactions, parameter = list(support=0.1, confidence = 0.4,maxlen=2) )
+crypto_ec_gi_rules
+crypto_ec_gi_rules2<-(sort(crypto_ec_gi_rules, by="support"))
+inspect((sort(crypto_ec_gi_rules, by="support")))
+inspect((sort(crypto_ec_gi_rules, by="confidence")))
+inspect((sort(crypto_ec_gi_rules, by="lift")))
+```
+
+
+```{r}
+#plot(crypto_ec_rules)
+
+plot(crypto_ec_rules, measure = c("support", "lift"), shading = "confidence")
+plot(crypto_ec_rules2[c(3,6,10,12),], method = "graph")
+#plot(crypto_ec_rules, measure = c("support", "lift"),method = "two-key plot")
+```
+
+
+```{r}
+#plot(crypto_ec_rules)
+
+plot(crypto_ec_gi_rules, measure = c("support", "lift"), shading = "confidence")
+plot(crypto_ec_gi_rules2[c(3,4,6:9),], method = "graph")
+#plot(crypto_ec_rules, measure = c("support", "lift"),method = "two-key plot")
+```
+
+
+```{r}
+crypto_ec_gi_rules<-apriori(crypto_ec_gi_id_transactions, parameter = list(support=0.01, confidence = 0.04,maxlen=2) )
+crypto_ec_gi_rules
+crypto_ec_gi_rules3<-(sort(crypto_ec_gi_rules, by="support"))
+inspect((sort(crypto_ec_gi_rules3, by="support")))
+inspect((sort(crypto_ec_gi_rules, by="confidence")))
+inspect((sort(crypto_ec_gi_rules, by="lift")))
+
+plot(crypto_ec_gi_rules3[c(30,28,20,18,13,8,6),], method = "graph")
+
+```
+
+```{r}
+crypto_ec_gi_rules3_df<-inspect((sort(crypto_ec_gi_rules3, by="support")))
+write.csv(crypto_ec_gi_rules3_df[grepl("coli",crypto_ec_gi_rules3_df$lhs),],file="/Users/owner/Desktop/crypto/crypto_ec_gi_rules3_df.csv")
+```
+
+
+```{r}
+l<-load("/Users/owner/Desktop/crypto/ec/USGS_cc4_20190507_2.Rdata")
+USGS_cc4
+```
+
+
