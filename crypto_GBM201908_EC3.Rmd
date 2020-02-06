@@ -574,6 +574,13 @@ USGS_cc4$storm<-as.numeric(USGS_cc4$storm)
 save(USGS_cc4,file="C:/Users/gis/Documents/TAO/ecoli_20200205/USGS_cc4_2020.Rdata")
 ```
 
+```{r}
+dim(USGS_cc4)
+USGS_cc4<-USGS_cc4[!is.na(USGS_cc4$storm) ,]
+USGS_cc4[is.na(USGS_cc4$tavg),]$tavg<-USGS_cc4[is.na(USGS_cc4$tavg),]$tavg2
+dim(USGS_cc4)
+```
+
 
 #binary detect
 ```{r}
@@ -595,28 +602,15 @@ USGS_cc4_lulc$tavg<-USGS_cc4_lulc$tavg/10
  USGS_cc4_lulc$Forest_Max_temperature <-USGS_cc4_lulc$Forest*USGS_cc4_lulc$tmax
  USGS_cc4_lulc$Forest_Surface_runoff <- USGS_cc4_lulc$Forest*USGS_cc4_lulc$storm
  USGS_cc4_lulc$Forest_Runoff <- USGS_cc4_lulc$Forest*USGS_cc4_lulc$runoff
-# USGS_cc4_lulc$Developed_Min_temperature<-USGS_cc4_lulc$Developed*USGS_cc4_lulc$tmin
-# USGS_cc4_lulc$Developed_Max_temperature <-USGS_cc4_lulc$Developed*USGS_cc4_lulc$tmax
-# USGS_cc4_lulc$Developed_Surface_runoff <- USGS_cc4_lulc$Developed*USGS_cc4_lulc$storm
-# USGS_cc4_lulc$Developed_Runoff <- USGS_cc4_lulc$Developed*USGS_cc4_lulc$runoff
-# USGS_cc4_lulc$Other_Min_temperature<-USGS_cc4_lulc$Other*USGS_cc4_lulc$tmin
-# USGS_cc4_lulc$Other_Max_temperature <-USGS_cc4_lulc$Other*USGS_cc4_lulc$tmax
-# USGS_cc4_lulc$Other_Surface_runoff <- USGS_cc4_lulc$Other*USGS_cc4_lulc$storm
-# USGS_cc4_lulc$Other_Runoff <- USGS_cc4_lulc$Other*USGS_cc4_lulc$runoff
-# USGS_cc4_lulc$Cultivated_Min_temperature<-USGS_cc4_lulc$Cultivated*USGS_cc4_lulc$tmin
-# USGS_cc4_lulc$Cultivated_Max_temperature <-USGS_cc4_lulc$Cultivated*USGS_cc4_lulc$tmax
-# USGS_cc4_lulc$Cultivated_Surface_runoff <- USGS_cc4_lulc$Cultivated*USGS_cc4_lulc$storm
-# USGS_cc4_lulc$Cultivated_Runoff <- USGS_cc4_lulc$Cultivated*USGS_cc4_lulc$runoff
-#USGS_cc4_lulc$Surface_runoff_Min_temperature <-USGS_cc4_lulc$storm*USGS_cc4_lulc$tmin
-#USGS_cc4_lulc$Surface_runoff_Max_temperature <-USGS_cc4_lulc$storm*USGS_cc4_lulc$tmax
-#USGS_cc4_lulc$Surface_runoff_Runoff <-USGS_cc4_lulc$storm*USGS_cc4_lulc$runoff
+
+ 
 colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="storm"] <-"Surface_runoff"
 colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="tmin"] <- "Min_temperature"
 colnames(USGS_cc4_lulc)[colnames( USGS_cc4_lulc)=="tmax"] <- "Max_temperature"
 dim(USGS_cc4_lulc)
 
 
-save(USGS_cc4_lulc,file="C:/Users/gis/Documents/TAO/ecoli_20200205/USGS_cc4_201912.Rdata")
+save(USGS_cc4_lulc,file="C:/Users/gis/Documents/TAO/ecoli_20200205/USGS_cc4_20200206.Rdata")
 ```
 
 #split the data (Tavg)
@@ -646,8 +640,6 @@ save(test,file="C:/Users/gis/Documents/TAO/ecoli_20200205/USGS_cc4_test.Rdata")
 
 #split the data (Tavg is the only T)
 ```{r}
-
-
 set.seed(123) #uses a fixed seed so that every call will result in the same output.
 USGS_cc4_lulc<-USGS_cc4_lulc[,c(71:74  #LULC
 
@@ -672,13 +664,11 @@ save(test,file="C:/Users/gis/Documents/TAO/ecoli_20200205/USGS_cc4_test.Rdata")
 
 #split the data (Tavg is the only T, runoff is the only Q)
 ```{r}
-
-
 set.seed(123) #uses a fixed seed so that every call will result in the same output.
-USGS_cc4_lulc<-USGS_cc4_lulc[,c(71:74  #LULC
+USGS_cc4_lulc<-USGS_cc4_lulc[,c(87:90  #LULC
 
                                 ,66 #TEMPERATURE
-                                ,70 #SURFACE Q
+                                ,86 #SURFACE Q
                                 ,32 #RUNOFF
                                 ,26 #WATERSHED AREA
                                 ,23 #DETECT
